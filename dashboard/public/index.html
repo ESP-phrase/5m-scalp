@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scalp5 — Polymarket 5m BTC Bot</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="alert-banner" class="alert-banner">
+    <span class="alert-icon">&#9888;</span>
+    <span>PAPER TRADING MODE — No real money at risk</span>
+  </div>
+
+  <div class="container">
+    <header>
+      <h1>Scalp5</h1>
+      <span class="subtitle">Polymarket 5m BTC Scalping Bot</span>
+    </header>
+
+    <div class="controls">
+      <button id="btn-start" class="btn btn-green">Start Bot</button>
+      <button id="btn-stop" class="btn btn-red" disabled>Stop Bot</button>
+      <select id="strategy-select" class="select">
+        <option value="market_making" selected>Market Making</option>
+      </select>
+      <span id="status-dot" class="status-dot stopped"></span>
+      <span id="status-text" class="status-text">Stopped</span>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Realized P&L</div>
+        <div id="pnl-realized" class="stat-value">$0.00</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unrealized P&L</div>
+        <div id="pnl-unrealized" class="stat-value">$0.00</div>
+        <button id="btn-close-all" class="close-all-btn" title="Close all open orders">Close All</button>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total P&L</div>
+        <div id="pnl-total" class="stat-value">$0.00</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Fills</div>
+        <div id="fill-count" class="stat-value">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Fee Rate</div>
+        <div id="fee-rate" class="stat-value">0.10%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Available Balance</div>
+        <div id="pnl-balance" class="stat-value positive">$200.00</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Balance</div>
+        <div id="pnl-total-balance" class="stat-value positive">$200.00</div>
+      </div>
+    </div>
+
+    <div class="model-compare">
+      <div class="panel model-panel">
+        <h2>Model: LightGBM</h2>
+        <div>Prediction: <strong id="model-lgb-pred">--</strong></div>
+        <div>Latency: <strong id="model-lgb-lat">--</strong> ms</div>
+        <button id="btn-close-lgb" class="close-all-btn">Close All (LGB)</button>
+      </div>
+      <div class="panel model-panel">
+        <h2>Model: XGBoost</h2>
+        <div>Prediction: <strong id="model-xgb-pred">--</strong></div>
+        <div>Latency: <strong id="model-xgb-lat">--</strong> ms</div>
+        <button id="btn-close-xgb" class="close-all-btn">Close All (XGB)</button>
+      </div>
+    </div>
+
+    <div class="grid-2col">
+      <div class="panel">
+        <h2>Order Book Depth</h2>
+        <div class="chart-container">
+          <canvas id="depth-chart"></canvas>
+        </div>
+        <div id="book-info" class="book-info">
+          <span>Best Bid: <strong id="best-bid">--</strong></span>
+          <span>Best Ask: <strong id="best-ask">--</strong></span>
+          <span>Spread: <strong id="spread">--</strong></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Open Orders</h2>
+        <div id="orders-table" class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Side</th>
+                <th>Price</th>
+                <th>Size</th>
+                <th>Filled</th>
+                <th>PnL</th>
+                <th>Status</th>
+                <th>Close</th>
+              </tr>
+            </thead>
+            <tbody id="orders-body">
+              <tr><td colspan="6" class="empty">No open orders</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Recent Fills</h2>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Order</th>
+              <th>Side</th>
+              <th>Price</th>
+              <th>Size</th>
+            </tr>
+          </thead>
+          <tbody id="fills-body">
+            <tr><td colspan="5" class="empty">No fills yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Log</h2>
+      <div id="log-container" class="log-container"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Markets Tracked</h2>
+      <div id="markets-list" class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Midpoint</th>
+            </tr>
+          </thead>
+          <tbody id="markets-body">
+            <tr><td colspan="2" class="empty">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

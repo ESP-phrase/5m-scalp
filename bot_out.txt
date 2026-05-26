@@ -1,0 +1,26 @@
+time=2026-05-26T00:54:46.432-05:00 level=INFO msg="sqlite store ready" path=scalp5.db
+time=2026-05-26T00:54:46.593-05:00 level=INFO msg="gamma batch" order=liquidity count=100
+time=2026-05-26T00:54:46.690-05:00 level=INFO msg="gamma batch" order=volume24hr count=100
+time=2026-05-26T00:54:46.700-05:00 level=INFO msg="discovered markets" count=1
+time=2026-05-26T00:54:46.700-05:00 level=INFO msg=market question="Bitcoin Up or Down - May 26, 1:20PM-1:25PM ET" slug=btc-updown-5m-1779816000 tokens=2 volume=0
+time=2026-05-26T00:54:46.700-05:00 level=INFO msg="subscribing to tokens" count=2
+time=2026-05-26T00:54:46.700-05:00 level=INFO msg="api server starting" port=8400
+time=2026-05-26T00:54:47.200-05:00 level=INFO msg="generating synthetic book" token=35168502681023429477067370934115172120607397900706971138168146010778726500910
+time=2026-05-26T00:54:47.209-05:00 level=INFO msg="synthetic book signals" count=2
+time=2026-05-26T00:54:47.209-05:00 level=INFO msg="placed paper order" id=a side=BUY price=0.48 size=25
+time=2026-05-26T00:54:47.209-05:00 level=INFO msg="placed paper order" id=b side=SELL price=0.52 size=25
+time=2026-05-26T00:54:47.210-05:00 level=INFO msg="generating synthetic book" token=77210579655132602878492357649427279649460284073871805445292788504293203602349
+time=2026-05-26T00:54:47.210-05:00 level=INFO msg="synthetic book signals" count=2
+time=2026-05-26T00:54:47.210-05:00 level=INFO msg="placed paper order" id=c side=BUY price=0.49 size=25
+time=2026-05-26T00:54:47.211-05:00 level=INFO msg="placed paper order" id=d side=SELL price=0.51 size=25
+time=2026-05-26T00:54:47.668-05:00 level=INFO msg="webosocket connected" tokens=2
+time=2026-05-26T00:54:49.204-05:00 level=INFO msg="initial book seeding complete"
+2026/05/26 00:55:31 "GET http://localhost:8400/api/stats HTTP/1.1" from [::1]:63760 - 200 994B in 0s
+time=2026-05-26T00:55:38.353-05:00 level=INFO msg="bot stopped"
+time=2026-05-26T00:55:38.353-05:00 level=INFO msg="engine stopped via control — cancelling all orders"
+2026/05/26 00:55:38 "POST http://localhost:8400/api/bot/stop HTTP/1.1" from [::1]:50866 - 200 12B in 8.1399ms
+2026/05/26 00:55:39 "GET http://localhost:8400/api/stats HTTP/1.1" from [::1]:50866 - 200 142B in 0s
+time=2026-05-26T00:55:39.412-05:00 level=INFO msg="bot started" strategy=market_making
+time=2026-05-26T00:55:39.412-05:00 level=INFO msg="engine started via control"
+2026/05/26 00:55:39 "POST http://localhost:8400/api/bot/start HTTP/1.1" from [::1]:50866 - 200 12B in 505.4µs
+2026/05/26 00:55:43 "GET http://localhost:8400/api/stats HTTP/1.1" from [::1]:50866 - 200 141B in 0s

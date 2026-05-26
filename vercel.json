@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "name": "scalp5-dashboard",
+  "builds": [
+    { "src": "dashboard/public/**", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/", "dest": "/index.html" },
+    { "src": "(.*)", "dest": "/$1" }
+  ]
+}
