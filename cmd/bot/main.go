@@ -34,9 +34,34 @@ var (
 )
 
 var (
-	tpClosedMu     sync.Mutex
-	tpClosedTokens = make(map[string]bool)
+	trackedMu  sync.Mutex
+	trackedIDs []string
 )
+
+func addTrackedTokens(ids []string) {
+	trackedMu.Lock()
+	defer trackedMu.Unlock()
+	for _, id := range ids {
+		found := false
+		for _, t := range trackedIDs {
+			if t == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			trackedIDs = append(trackedIDs, id)
+		}
+	}
+}
+
+func getTrackedTokens() []string {
+	trackedMu.Lock()
+	defer trackedMu.Unlock()
+	cp := make([]string, len(trackedIDs))
+	copy(cp, trackedIDs)
+	return cp
+}
 
 func assignModel(tokenID string) string {
 	modelMu.Lock()
@@ -85,6 +110,18 @@ func callModelServer(modelTag string, features []float64) (float64, float64, err
 	return pred, lat, nil
 }
 
+// safeGo runs fn in a goroutine with panic recovery logging.
+func safeGo(fn func(), name string) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panicked", "name", name, "recover", r)
+			}
+		}()
+		fn()
+	}()
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -110,16 +147,16 @@ func main() {
 		slog.Warn("no markets found, will keep searching")
 	}
 
-	var tokenIDs []string
-	seen := make(map[string]bool)
+	var seenTokenIDs = make(map[string]bool)
 	for _, m := range markets {
 		for _, tid := range m.ClobTokenIDs {
-			if !seen[tid] {
-				seen[tid] = true
-				tokenIDs = append(tokenIDs, tid)
+			if !seenTokenIDs[tid] {
+				seenTokenIDs[tid] = true
+				trackedIDs = append(trackedIDs, tid)
 			}
 		}
 	}
+	tokenIDs := trackedIDs
 
 	slog.Info("subscribing to tokens", "count", len(tokenIDs))
 
@@ -137,7 +174,7 @@ func main() {
 
 	server := api.NewServer(hub, st, paperEngine, pnlTracker, reg, book)
 	server.SetMarkets(markets)
-	if err := telemetry.Init(cfg.RedisAddr, "telemetry.csv"); err != nil {
+	if err := telemetry.Init(cfg.RedisAddr, cfg.DatabaseURL, "telemetry.csv"); err != nil {
 		slog.Warn("telemetry init failed", "err", err)
 	}
 
@@ -156,29 +193,27 @@ func main() {
 
 	if len(tokenIDs) > 0 {
 		wsClient := polymarket.NewWSClient(cfg.WsURL, tokenIDs)
-		go func() {
+		safeGo(func() {
 			for {
 				if err := wsClient.Connect(); err != nil {
 					slog.Warn("ws connect failed", "err", err)
 					time.Sleep(3 * time.Second)
 					continue
 				}
-				break
-			}
-		}()
-
-		go func() {
-			for evt := range wsClient.Events() {
-				select {
-				case wsEvents <- evt:
-				default:
+				for evt := range wsClient.Events() {
+					select {
+					case wsEvents <- evt:
+					default:
+					}
 				}
+				slog.Warn("ws events closed, backing off before reconnect", "backoff", "3s")
+				time.Sleep(3 * time.Second)
 			}
-		}()
+		}, "wsLoop")
 	}
 
 	// Seed initial book data via REST
-	go func() {
+	safeGo(func() {
 		time.Sleep(2 * time.Second)
 		for _, tid := range tokenIDs {
 			snap, err := client.GetBook(tid)
@@ -190,12 +225,12 @@ func main() {
 			}
 		}
 		slog.Info("initial book seeding complete")
-	}()
+	}, "bookSeeding")
 
-	marketsRefresh := time.NewTicker(5 * time.Minute)
+	marketsRefresh := time.NewTicker(2 * time.Minute)
 	defer marketsRefresh.Stop()
 
-	go func() {
+	safeGo(func() {
 		for range marketsRefresh.C {
 			newMarkets, err := client.DiscoverMarkets(cfg.MarketSearchTags)
 			if err != nil {
@@ -204,8 +239,8 @@ func main() {
 			var newTokens []string
 			for _, m := range newMarkets {
 				for _, tid := range m.ClobTokenIDs {
-					if !seen[tid] {
-						seen[tid] = true
+					if !seenTokenIDs[tid] {
+						seenTokenIDs[tid] = true
 						newTokens = append(newTokens, tid)
 					}
 				}
@@ -213,25 +248,63 @@ func main() {
 			if len(newTokens) > 0 {
 				slog.Info("new markets found", "count", len(newTokens))
 				server.SetMarkets(newMarkets)
+				addTrackedTokens(newTokens)
+
+				// Subscribe WS to new tokens
+				newWS := polymarket.NewWSClient(cfg.WsURL, newTokens)
+				safeGo(func() {
+					for {
+						if err := newWS.Connect(); err != nil {
+							slog.Warn("ws connect failed (new tokens)", "err", err)
+							time.Sleep(3 * time.Second)
+							continue
+						}
+						for evt := range newWS.Events() {
+							select {
+							case wsEvents <- evt:
+							default:
+							}
+						}
+						slog.Warn("ws events closed (new tokens), reconnecting", "backoff", "3s")
+						time.Sleep(3 * time.Second)
+					}
+				}, "wsLoopNewTokens")
+
+				// Seed book data for new tokens
+				safeGo(func() {
+					time.Sleep(2 * time.Second)
+					for _, tid := range newTokens {
+						snap, err := client.GetBook(tid)
+						if err != nil {
+							genSyntheticBook(tid, book, reg.Active(), paperEngine, hub, st, cfg)
+							continue
+						}
+						if len(snap.Bids) > 0 || len(snap.Asks) > 0 {
+							feedBookToEngine(snap, book, paperEngine, pnlTracker, reg, hub, st, cfg)
+						} else {
+							genSyntheticBook(tid, book, reg.Active(), paperEngine, hub, st, cfg)
+						}
+					}
+				}, "seedNewTokens")
 			}
 		}
-	}()
+	}, "marketsRefresh")
 
-	go runEngine(wsEvents, book, paperEngine, pnlTracker, reg, hub, st, cfg, client, tokenIDs, controlCh, func() {
+	safeGo(func() { runEngine(wsEvents, book, paperEngine, pnlTracker, reg, hub, st, cfg, client, tokenIDs, controlCh, func() {
 		server.Stop()
-	})
+	}) }, "runEngine")
 
-	go func() {
+	safeGo(func() {
 		pnlTicker := time.NewTicker(10 * time.Second)
 		defer pnlTicker.Stop()
 		for range pnlTicker.C {
 			state := pnlTracker.GetState()
 			st.RecordPnL(state.Realized, state.Unrealized)
 		}
-	}()
+	}, "pnlRecorder")
 
-	// High-frequency per-order take-profit check (100ms)
-	if cfg.TakeProfit > 0 {
+	// High-frequency per-order take-profit / stop-loss check (100ms)
+	if cfg.TakeProfit > 0 || cfg.StopLoss > 0 {
 		go func() {
 			tpCheck := time.NewTicker(100 * time.Millisecond)
 			defer tpCheck.Stop()
@@ -242,22 +315,24 @@ func main() {
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							slog.Error("TP check panicked", "recover", r)
+							slog.Error("TP/SL check panicked", "recover", r)
 						}
 					}()
-					checkPerOrderTP(book, paperEngine, pnlTracker, reg, hub, cfg.TakeProfit, &tpClosedTokens, &tpClosedMu)
+					checkOrderBounds(book, paperEngine, pnlTracker, reg, hub, cfg.TakeProfit, cfg.StopLoss)
 				}()
 			}
 		}()
 	}
 
-	go func() {
-		slog.Info("api server starting", "port", cfg.APIPort)
-		if err := http.ListenAndServe(":"+cfg.APIPort, server.Handler()); err != nil {
-			slog.Error("server error", "err", err)
-			os.Exit(1)
+	safeGo(func() {
+		for {
+			slog.Info("api server starting", "port", cfg.APIPort)
+			if err := http.ListenAndServe(":"+cfg.APIPort, server.Handler()); err != nil {
+				slog.Error("server error, restarting in 2s", "err", err)
+				time.Sleep(2 * time.Second)
+			}
 		}
-	}()
+	}, "httpServer")
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -280,6 +355,11 @@ func runEngine(
 	controlCh chan bool,
 	stopFn func(),
 ) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("runEngine panicked", "recover", r)
+		}
+	}()
 	ticker := time.NewTicker(cfg.TickInterval)
 	defer ticker.Stop()
 
@@ -293,10 +373,10 @@ func runEngine(
 		case start := <-controlCh:
 			if start {
 				slog.Info("engine started via control")
-				go seedBookData(tokenIDs, client, book, paperEngine, pnlTracker, reg, hub, st, cfg)
+				go seedBookData(getTrackedTokens(), client, book, paperEngine, pnlTracker, reg, hub, st, cfg)
 			} else {
 				slog.Info("engine stopped via control — cancelling all orders")
-				for _, tid := range tokenIDs {
+				for _, tid := range getTrackedTokens() {
 					cancelled := paperEngine.CancelAllForToken(tid)
 					for _, oid := range cancelled {
 						if mm, ok := reg.Active().(*strategy.MarketMakingStrategy); ok {
@@ -316,12 +396,6 @@ func runEngine(
 		case evt := <-wsEvents:
 			if evt.Book != nil {
 				lastBookTime[evt.Book.AssetID] = time.Now()
-				tpClosedMu.Lock()
-				skip := tpClosedTokens[evt.Book.AssetID]
-				tpClosedMu.Unlock()
-				if skip {
-					continue
-				}
 			}
 			processWSEvent(evt, book, paperEngine, pnlTracker, reg, hub, st)
 
@@ -339,16 +413,7 @@ func runEngine(
 			processSignals(signals, book, paperEngine, active, hub, st, cfg)
 
 			// Generate synthetic books for tokens with no orders
-			for _, tid := range tokenIDs {
-				tpClosedMu.Lock()
-				skip := tpClosedTokens[tid]
-				tpClosedMu.Unlock()
-				if skip {
-					continue
-				}
-				if time.Since(lastBookTime[tid]) < 30*time.Second {
-					continue
-				}
+			for _, tid := range getTrackedTokens() {
 				hasOrders := false
 				for _, o := range paperEngine.GetOpenOrders() {
 					if o.TokenID == tid {
@@ -359,20 +424,13 @@ func runEngine(
 				if hasOrders {
 					continue
 				}
-				// Generate synthetic book
 				genSyntheticBook(tid, book, active, paperEngine, hub, st, cfg)
 				lastBookTime[tid] = time.Now()
 			}
 
 			// Synthetic trade generation for P&L visibility
-			for _, tid := range tokenIDs {
-				tpClosedMu.Lock()
-				skip := tpClosedTokens[tid]
-				tpClosedMu.Unlock()
-				if skip {
-					continue
-				}
-				if rand.Float64() > 0.04 {
+			for _, tid := range getTrackedTokens() {
+				if rand.Float64() > 0.15 {
 					continue
 				}
 				openOrders := paperEngine.GetOpenOrders()
@@ -416,9 +474,9 @@ func runEngine(
 				}
 			}
 
-			// Check per-order take-profit
-			if cfg.TakeProfit > 0 {
-				checkPerOrderTP(book, paperEngine, pnlTracker, reg, hub, cfg.TakeProfit, &tpClosedTokens, &tpClosedMu)
+			// Check per-order take-profit / stop-loss
+			if cfg.TakeProfit > 0 || cfg.StopLoss > 0 {
+				checkOrderBounds(book, paperEngine, pnlTracker, reg, hub, cfg.TakeProfit, cfg.StopLoss)
 			}
 
 		case <-bookRefresh.C:
@@ -426,13 +484,7 @@ func runEngine(
 				continue
 			}
 			// Poll REST for book data as fallback
-			for _, tid := range tokenIDs {
-				tpClosedMu.Lock()
-				skip := tpClosedTokens[tid]
-				tpClosedMu.Unlock()
-				if skip {
-					continue
-				}
+			for _, tid := range getTrackedTokens() {
 				snap, err := client.GetBook(tid)
 				if err != nil {
 					continue
@@ -740,13 +792,13 @@ func processSignals(
 			}
 
 			order := paperEngine.PlaceOrder(sig.TokenID, sig.Side, price, sig.Size)
-			// attach model metadata
-			if order != nil {
-				order.ModelTag = modelTag
-				order.ModelLatencyMs = lat
+			if order == nil {
+				continue
 			}
-
-				slog.Info("placed paper order", "id", order.ID, "side", sig.Side, "price", sig.Price, "size", sig.Size, "model", modelTag, "pred", pred, "lat_ms", lat)
+			order.EntryMid = mid
+			paperEngine.SetOrderModelMeta(order.ID, modelTag, lat)
+			slog.Info("placed paper order", "id", order.ID, "side", sig.Side, "price", sig.Price, "size", sig.Size, "model", modelTag, "pred", pred, "lat_ms", lat)
+			telemetry.PublishOrder(order, mid, pred, modelTag, lat)
 
 				hub.Broadcast(api.SSEEvent{
 					Type: "order",
@@ -842,48 +894,54 @@ func makeEvtChan(hub *api.Hub) chan<- interface{} {
 	return ch
 }
 
-func checkPerOrderTP(
+func checkOrderBounds(
 	book *engine.VirtualBook,
 	paperEngine *engine.PaperEngine,
 	pnlTracker *engine.PnLTracker,
 	reg *strategy.Registry,
 	hub *api.Hub,
 	tpThreshold float64,
-	tpClosed *map[string]bool,
-	tpClosedMu *sync.Mutex,
+	slThreshold float64,
 ) {
 	openOrders := paperEngine.GetOpenOrders()
 	for _, o := range openOrders {
-		if o.Side != "BUY" || o.Filled <= 0 {
+		if o.Filled <= 0 {
 			continue
 		}
 
-		tpClosedMu.Lock()
-		closed := (*tpClosed)[o.TokenID]
-		tpClosedMu.Unlock()
-		if closed {
-			continue
-		}
-
-		mid := book.Midpoint(o.TokenID)
+		mid := o.EntryMid
 		if mid <= 0 {
-			continue
+			mid = o.Price
 		}
-		orderPnl := (mid - o.Price) * o.Filled
-		if orderPnl < tpThreshold {
+
+		var orderPnl float64
+		if o.Side == "BUY" {
+			orderPnl = (mid - o.Price) * o.Filled
+		} else {
+			orderPnl = (o.Price - mid) * o.Filled
+		}
+
+		var reason string
+		if tpThreshold > 0 && orderPnl >= tpThreshold {
+			reason = "TP"
+		} else if slThreshold > 0 && -orderPnl >= slThreshold {
+			reason = "SL"
+		} else {
 			continue
 		}
 
-		slog.Info("per-order take-profit", "order", o.ID, "token", o.TokenID[:8], "pnl", orderPnl, "threshold", tpThreshold)
+		slog.Info("per-order close", "order", o.ID, "token", o.TokenID[:8], "reason", reason, "pnl", orderPnl)
 
 		paperEngine.CancelOrder(o.ID)
 		if mm, ok := reg.Active().(*strategy.MarketMakingStrategy); ok {
 			mm.RemoveOrder(o.ID)
-			// Update strategy position tracking - we're closing the position
-			mm.UpdatePosition(o.TokenID, o.Filled, "SELL")
+			closeSide := "SELL"
+			if o.Side == "SELL" {
+				closeSide = "BUY"
+			}
+			mm.UpdatePosition(o.TokenID, o.Filled, closeSide)
 		}
 
-		// Record closing fill at current mid to realize profit
 		closeFill := engine.Fill{
 			OrderID:  o.ID,
 			TokenID:  o.TokenID,
@@ -892,16 +950,17 @@ func checkPerOrderTP(
 			Size:     o.Filled,
 			Time:     time.Now(),
 		}
+		if o.Side == "SELL" {
+			closeFill.Side = "BUY"
+		}
 		pnlTracker.RecordFill(closeFill)
-
-		tpClosedMu.Lock()
-		(*tpClosed)[o.TokenID] = true
-		tpClosedMu.Unlock()
+		telemetry.PublishClose(o.ID, o.TokenID, o.Side, reason, mid, o.Filled, mid, orderPnl)
 
 		hub.Broadcast(api.SSEEvent{
 			Type: "log",
 			Data: map[string]string{
-				"message": fmt.Sprintf("TP: closed %s (filled=%.2f) at $%.4f for $%.2f profit", o.ID, o.Filled, mid, orderPnl),
+				"message": fmt.Sprintf("%s: closed %s (%s filled=%.2f) at $%.4f for $%.2f %s",
+					reason, o.ID, o.Side, o.Filled, mid, orderPnl, reason),
 			},
 			Time: time.Now().Format(time.RFC3339),
 		})

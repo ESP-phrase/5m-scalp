@@ -36,7 +36,7 @@ func (c *Client) DiscoverMarkets(keywords []string) ([]GammaMarket, error) {
 		limit     string
 	}{
 		{"liquidity", "true", "500"},
-		{"volume24hr", "false", "100"},
+		{"volume24hr", "false", "500"},
 	}
 
 	for _, batch := range batches {
@@ -49,21 +49,36 @@ func (c *Client) DiscoverMarkets(keywords []string) ([]GammaMarket, error) {
 
 		u := fmt.Sprintf("%s/markets?%s", c.gammaURL, params.Encode())
 
-		resp, err := c.http.Get(u)
-		if err != nil {
-			slog.Warn("gamma fetch failed", "order", batch.order, "err", err)
-			continue
+		var body []byte
+		var statusCode int
+		var fetchErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				backoff := time.Duration(1<<uint(attempt)) * time.Second
+				slog.Info("gamma retry", "order", batch.order, "attempt", attempt+1, "backoff", backoff)
+				time.Sleep(backoff)
+			}
+			resp, err := c.http.Get(u)
+			if err != nil {
+				fetchErr = err
+				continue
+			}
+			body, err = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				fetchErr = err
+				continue
+			}
+			statusCode = resp.StatusCode
+			if statusCode != http.StatusOK {
+				fetchErr = fmt.Errorf("http %d", statusCode)
+				continue
+			}
+			fetchErr = nil
+			break
 		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			slog.Warn("gamma read failed", "order", batch.order, "err", err)
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			slog.Warn("gamma bad status", "order", batch.order, "code", resp.StatusCode)
+		if fetchErr != nil {
+			slog.Warn("gamma fetch failed", "order", batch.order, "err", fetchErr)
 			continue
 		}
 

@@ -27,6 +27,9 @@
       </select>
       <span id="status-dot" class="status-dot stopped"></span>
       <span id="status-text" class="status-text">Stopped</span>
+      <span id="api-dot" class="status-dot disconnected" style="margin-left:12px"></span>
+      <span id="api-text" class="status-text">API</span>
+      <span id="last-updated" class="status-text" style="margin-left:auto;font-size:11px;opacity:0.6">--</span>
     </div>
 
     <div class="stats-grid">
@@ -61,18 +64,33 @@
       </div>
     </div>
 
-    <div class="model-compare">
-      <div class="panel model-panel">
-        <h2>Model: LightGBM</h2>
-        <div>Prediction: <strong id="model-lgb-pred">--</strong></div>
-        <div>Latency: <strong id="model-lgb-lat">--</strong> ms</div>
-        <button id="btn-close-lgb" class="close-all-btn">Close All (LGB)</button>
-      </div>
-      <div class="panel model-panel">
-        <h2>Model: XGBoost</h2>
-        <div>Prediction: <strong id="model-xgb-pred">--</strong></div>
-        <div>Latency: <strong id="model-xgb-lat">--</strong> ms</div>
-        <button id="btn-close-xgb" class="close-all-btn">Close All (XGB)</button>
+    <div class="panel">
+      <h2>Model A/B Comparison</h2>
+      <div class="model-unified">
+        <table class="model-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Prediction</th>
+              <th>Latency</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="badge badge-green">LightGBM</span></td>
+              <td><strong id="model-lgb-pred">--</strong></td>
+              <td><strong id="model-lgb-lat">--</strong> ms</td>
+              <td><button id="btn-close-lgb" class="close-all-btn">Close LGB</button></td>
+            </tr>
+            <tr>
+              <td><span class="badge badge-blue">XGBoost</span></td>
+              <td><strong id="model-xgb-pred">--</strong></td>
+              <td><strong id="model-xgb-lat">--</strong> ms</td>
+              <td><button id="btn-close-xgb" class="close-all-btn">Close XGB</button></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 

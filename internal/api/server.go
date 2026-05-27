@@ -101,9 +101,9 @@ func NewServer(
 
 	r := chi.NewRouter()
 
-	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware)
+	r.Use(silentLogger)
 
 	r.Get("/api/events", s.handleSSE)
 	r.Get("/api/stats", s.handleStats)
@@ -117,6 +117,21 @@ func NewServer(
 
 	s.router = r
 	return s
+}
+
+// silentLogger logs only non-polling requests to reduce log spam.
+func silentLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		skip := false
+		path := r.URL.Path
+		if path == "/api/stats" || path == "/api/fills" || path == "/api/events" {
+			skip = true
+		}
+		if !skip {
+			slog.Info("req", "method", r.Method, "path", path)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -226,12 +241,37 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Include book data for the first active token so the dashboard depth chart populates
+	var bestBid, bestAsk, spread float64
+	var bids, asks []interface{}
+	for _, o := range openOrders {
+		if b, _ := s.book.BestBid(o.TokenID); b > 0 {
+			bestBid = b
+			bestAsk, _ = s.book.BestAsk(o.TokenID)
+			spread = bestAsk - bestBid
+			if tb := s.book.GetBook(o.TokenID); tb != nil {
+				for _, l := range tb.Bids {
+					bids = append(bids, map[string]float64{"price": l.Price, "size": l.Size})
+				}
+				for _, l := range tb.Asks {
+					asks = append(asks, map[string]float64{"price": l.Price, "size": l.Size})
+				}
+			}
+			break
+		}
+	}
+
 	resp := map[string]interface{}{
 		"pnl":         state,
 		"open_orders": openOrders,
 		"positions":   positions,
 		"running":     s.running,
 		"midpoints":   midpoints,
+		"best_bid":    bestBid,
+		"best_ask":    bestAsk,
+		"spread":      spread,
+		"bids":        bids,
+		"asks":        asks,
 	}
 
 	active := s.strategyReg.Active()
@@ -367,16 +407,59 @@ func (s *Server) handleFills(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCancelAllOrders(w http.ResponseWriter, r *http.Request) {
-	count := s.paperEngine.CancelAllOrders()
+	openOrders := s.paperEngine.GetOpenOrders()
+	count := 0
+	var totalRealized float64
+
+	for _, o := range openOrders {
+		if o.Filled <= 0 {
+			s.paperEngine.CancelOrder(o.ID)
+			count++
+			continue
+		}
+		mid := s.book.Midpoint(o.TokenID)
+		if mid <= 0 {
+			mid = o.EntryMid
+		}
+		if mid <= 0 {
+			mid = o.Price
+		}
+		closeSide := "SELL"
+		if o.Side == "SELL" {
+			closeSide = "BUY"
+		}
+		closeFill := engine.Fill{
+			OrderID:  o.ID,
+			TokenID:  o.TokenID,
+			Side:     closeSide,
+			Price:    mid,
+			Size:     o.Filled,
+			Time:     time.Now(),
+		}
+		s.pnlTracker.RecordFill(closeFill)
+		s.paperEngine.CancelOrder(o.ID)
+		if mm, ok := s.strategyReg.Active().(*strategy.MarketMakingStrategy); ok {
+			mm.UpdatePosition(o.TokenID, o.Filled, closeSide)
+		}
+		var orderPnl float64
+		if o.Side == "BUY" {
+			orderPnl = (mid - o.Price) * o.Filled
+		} else {
+			orderPnl = (o.Price - mid) * o.Filled
+		}
+		totalRealized += orderPnl
+		count++
+	}
 	if mm, ok := s.strategyReg.Active().(*strategy.MarketMakingStrategy); ok {
 		mm.RemoveAllOrders()
 	}
+
 	s.hub.Broadcast(SSEEvent{
 		Type: "log",
-		Data: map[string]string{"message": fmt.Sprintf("Cancelled %d orders", count)},
+		Data: map[string]string{"message": fmt.Sprintf("Closed %d orders, realized $%.2f", count, totalRealized)},
 		Time: time.Now().Format(time.RFC3339),
 	})
-	writeJSON(w, map[string]interface{}{"ok": true, "count": count})
+	writeJSON(w, map[string]interface{}{"ok": true, "count": count, "realized": totalRealized})
 }
 
 func (s *Server) handleCancelOrder(w http.ResponseWriter, r *http.Request) {

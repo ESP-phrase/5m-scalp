@@ -108,6 +108,14 @@ header h1 {
   background: #ef4444;
   box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
 }
+.status-dot.disconnected {
+  background: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+}
+.status-dot.connected {
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+}
 
 .status-text {
   font-size: 14px;
@@ -174,16 +182,29 @@ header h1 {
   margin-bottom: 16px;
 }
 
-.model-compare {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin: 12px 0;
+.model-unified {
+  overflow-x: auto;
 }
-.model-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+
+.model-table {
+  width: 100%;
+}
+
+.model-table th {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+
+.model-table td {
+  vertical-align: middle;
+  padding: 10px 12px;
+}
+
+.model-table .close-all-btn {
+  margin-top: 0;
+  font-size: 10px;
+  padding: 3px 10px;
 }
 
 .close-all-btn {

@@ -160,6 +160,13 @@ function addLog(msg) {
   }
 }
 
+function setApiStatus(ok) {
+  const dot = $('#api-dot');
+  const text = $('#api-text');
+  dot.className = 'status-dot ' + (ok ? 'connected' : 'disconnected');
+  text.textContent = ok ? 'API Connected' : 'API Disconnected';
+}
+
 function setRunning(running) {
   $('#btn-start').disabled = running;
   $('#btn-stop').disabled = !running;
@@ -225,12 +232,44 @@ async function fetchStats() {
     const resp = await fetch(API + '/api/stats');
     if (!resp.ok) { addLog(`Stats API error: ${resp.status}`); return; }
     const data = await resp.json();
+    setApiStatus(true);
     updatePnl(data.pnl);
     updateOrders(data.open_orders, data.midpoints);
     setRunning(data.running);
+    $('#last-updated').textContent = new Date().toLocaleTimeString();
+    if (data.best_bid || data.best_ask) {
+      updateDepthChart(data.bids || [], data.asks || []);
+      updateBookInfo({ best_bid: data.best_bid, best_ask: data.best_ask, spread: data.spread });
+    }
   } catch (err) {
+    setApiStatus(false);
     addLog(`Stats fetch failed: ${err.message}`);
   }
+}
+
+async function fetchFills() {
+  try {
+    const resp = await fetch(API + '/api/fills');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const fillsArr = Array.isArray(data) ? data : (data.fills || []);
+    fills = fillsArr.slice(0, 50);
+    const tbody = $('#fills-body');
+    if (fills.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No fills yet</td></tr>';
+    } else {
+      tbody.innerHTML = fills.map(f => `
+        <tr>
+          <td class="mono">${f.time || ''}</td>
+          <td class="mono">${f.order_id || ''}</td>
+          <td><span class="badge ${f.side === 'BUY' ? 'badge-green' : 'badge-red'}">${f.side || ''}</span></td>
+          <td class="mono">${(f.price || 0).toFixed(4)}</td>
+          <td class="mono">${(f.size || 0).toFixed(2)}</td>
+        </tr>
+      `).join('');
+    }
+    $('#last-updated').textContent = new Date().toLocaleTimeString();
+  } catch (err) {}
 }
 
 async function fetchMarkets() {
@@ -266,6 +305,15 @@ async function apiCall(method, path, body) {
   } catch (err) {
     addLog(`API unreachable: ${err.message}`);
   }
+}
+
+function closeAllOrders() {
+  fetch(API + '/api/orders/cancel-all', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => { if (d.ok) addLog('Cancelled ' + (d.count || 'all') + ' orders'); })
+    .catch(e => addLog('Cancel failed: ' + e.message));
+  $('#orders-body').innerHTML = '<tr><td colspan="8" class="empty">Cancelling all...</td></tr>';
+  fetchStats();
 }
 
 $('#btn-start').addEventListener('click', () => {
@@ -312,17 +360,30 @@ async function updateModelPanels() {
   }
 }
 
-$('#btn-close-lgb').addEventListener('click', () => { addLog('Close all (LGB) triggered'); closeAllOrders(); });
-$('#btn-close-xgb').addEventListener('click', () => { addLog('Close all (XGB) triggered'); closeAllOrders(); });
-
 setInterval(updateModelPanels, 1000);
-
-initChart();
-connectSSE();
-fetchStats();
-fetchMarkets();
-
 setInterval(fetchStats, 500);
+setInterval(fetchFills, 500);
 setInterval(fetchMarkets, 30000);
 
-addLog('Dashboard connected — paper trading mode');
+try {
+  initChart();
+  connectSSE();
+  fetchStats();
+  fetchFills();
+  fetchMarkets();
+  setApiStatus(false);
+
+  $('#btn-close-lgb').addEventListener('click', () => {
+    addLog('Close all (LGB)');
+    closeAllOrders();
+  });
+  $('#btn-close-xgb').addEventListener('click', () => {
+    addLog('Close all (XGB)');
+    closeAllOrders();
+  });
+
+  addLog('Dashboard connected — paper trading mode');
+} catch (e) {
+  console.error('Dashboard init error:', e);
+  addLog('Init error: ' + e.message);
+}

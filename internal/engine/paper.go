@@ -16,8 +16,12 @@ type PaperOrder struct {
 	Filled         float64   `json:"filled"`
 	Status         string    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
+	VisibleAt      time.Time `json:"visible_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
 	ModelTag       string    `json:"model_tag,omitempty"`
 	ModelLatencyMs float64   `json:"model_latency_ms,omitempty"`
+	EntryMid       float64   `json:"entry_mid"`
+	FilledValue    float64   `json:"filled_value"`
 }
 
 type Fill struct {
@@ -55,6 +59,7 @@ func (pe *PaperEngine) SetEventChannel(ch chan<- interface{}) {
 func (pe *PaperEngine) PlaceOrder(tokenID, side string, price, size float64) *PaperOrder {
 	id := atomic.AddInt64(&pe.nextID, 1)
 
+	now := time.Now()
 	order := &PaperOrder{
 		ID:        formatID(id),
 		TokenID:   tokenID,
@@ -62,7 +67,9 @@ func (pe *PaperEngine) PlaceOrder(tokenID, side string, price, size float64) *Pa
 		Price:     price,
 		Size:      size,
 		Status:    "open",
-		CreatedAt: time.Now(),
+		CreatedAt: now,
+		VisibleAt: now, // may be adjusted by SetOrderModelMeta
+		ExpiresAt: now.Add(60 * time.Second),
 	}
 
 	pe.mu.Lock()
@@ -91,6 +98,11 @@ func (pe *PaperEngine) FillOrder(orderID string, size float64) *Fill {
 		return nil
 	}
 
+	// respect visibility delay
+	if time.Now().Before(order.VisibleAt) {
+		return nil
+	}
+
 	if rand.Float64() > pe.fillProb {
 		return nil
 	}
@@ -105,6 +117,7 @@ func (pe *PaperEngine) FillOrder(orderID string, size float64) *Fill {
 	}
 
 	order.Filled += size
+	order.FilledValue += size * order.Price
 	if order.Filled >= order.Size-0.001 {
 		order.Filled = order.Size
 		order.Status = "filled"
@@ -130,7 +143,6 @@ func (pe *PaperEngine) FillOrder(orderID string, size float64) *Fill {
 
 	return &fill
 }
-
 func (pe *PaperEngine) CancelOrder(orderID string) bool {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
@@ -197,6 +209,17 @@ func (pe *PaperEngine) CancelAllOrders() int {
 	return count
 }
 
+func (pe *PaperEngine) SetOrderModelMeta(orderID, modelTag string, latencyMs float64) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if order, ok := pe.orders[orderID]; ok {
+		order.ModelTag = modelTag
+		order.ModelLatencyMs = latencyMs
+		order.VisibleAt = order.CreatedAt.Add(time.Duration(latencyMs) * time.Millisecond)
+	}
+}
+
+
 func (pe *PaperEngine) HandleTrade(assetID, side string, price, size float64) []Fill {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
@@ -238,57 +261,80 @@ func (pe *PaperEngine) HandleTrade(assetID, side string, price, size float64) []
 
 	// Distribute fills among candidates
 	remaining := size
-	for _, order := range candidates {
-		if remaining <= 0 {
-			break
+for _, order := range candidates {
+			// skip not yet visible orders
+			if time.Now().Before(order.VisibleAt) {
+				continue
+			}
+			orderRemaining := order.Size - order.Filled
+			// Proportional fill
+			share := orderRemaining / totalAtLevel
+			fillSize := remaining * share
+			
+			// dynamic slippage: if order exceeds book size, reduce fill
+			if orderRemaining > bookSize && bookSize > 0 {
+				reduction := bookSize / (bookSize + orderRemaining)
+				fillSize = fillSize * reduction
+			}
+			
+			// Apply fill probability adjusted by depth
+			prob := pe.fillProb
+			if bookSize < 1 {
+				prob *= 0.5
+			}
+			if rand.Float64() > prob {
+				continue
+			}
+			
+			if fillSize > orderRemaining {
+				fillSize = orderRemaining
+			}
+			
+			fillSize = clampSize(fillSize, 0.01)
+			
+			order.Filled += fillSize
+			remaining -= fillSize
+			
+			if order.Filled >= order.Size-0.001 {
+				order.Filled = order.Size
+				order.Status = "filled"
+			} else {
+				order.Status = "partial"
+			}
+			
+			fill := Fill{
+				OrderID: order.ID,
+				TokenID: order.TokenID,
+				Side:    order.Side,
+				Price:   price,
+				Size:    fillSize,
+				Time:    time.Now(),
+			}
+			fills = append(fills, fill)
+			
+			if pe.eventCh != nil {
+				pe.eventCh <- map[string]interface{}{
+					"type": "fill",
+					"data": fill,
+				}
+			}
 		}
 
-		orderRemaining := order.Size - order.Filled
-		// Proportional fill
-		share := orderRemaining / totalAtLevel
-		fillSize := remaining * share
 
-		// Apply fill probability
-		if rand.Float64() > pe.fillProb {
-			continue
-		}
-
-		if fillSize > orderRemaining {
-			fillSize = orderRemaining
-		}
-
-		fillSize = clampSize(fillSize, 0.01)
-
-		order.Filled += fillSize
-		remaining -= fillSize
-
-		if order.Filled >= order.Size-0.001 {
-			order.Filled = order.Size
-			order.Status = "filled"
-		} else {
-			order.Status = "partial"
-		}
-
-		fill := Fill{
-			OrderID: order.ID,
-			TokenID: order.TokenID,
-			Side:    order.Side,
-			Price:   price,
-			Size:    fillSize,
-			Time:    time.Now(),
-		}
-		fills = append(fills, fill)
-
-		if pe.eventCh != nil {
-			pe.eventCh <- map[string]interface{}{
-				"type": "fill",
-				"data": fill,
+	
+	// cancel expired orders that remain open
+	for _, o := range pe.orders {
+		if (o.Status == "open" || o.Status == "partial") && time.Now().After(o.ExpiresAt) {
+			o.Status = "cancelled"
+			if pe.eventCh != nil {
+				pe.eventCh <- map[string]interface{}{"type": "order", "data": o}
 			}
 		}
 	}
 
 	return fills
 }
+
 
 func (pe *PaperEngine) GetOrders() []*PaperOrder {
 	pe.mu.RLock()

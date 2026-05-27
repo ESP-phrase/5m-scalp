@@ -1,11 +1,41 @@
 {
   "version": 2,
   "name": "scalp5-dashboard",
+  "buildCommand": "",
+  "outputDirectory": "",
   "builds": [
-    { "src": "dashboard/public/**", "use": "@vercel/static" }
+    {
+      "src": "dashboard/public/**",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "dashboard/server.js",
+      "use": "@vercel/node"
+    }
   ],
   "routes": [
-    { "src": "/", "dest": "/index.html" },
-    { "src": "(.*)", "dest": "/$1" }
-  ]
+    {
+      "src": "/api/(.*)",
+      "dest": "dashboard/server.js"
+    },
+    {
+      "src": "/events",
+      "dest": "dashboard/server.js"
+    },
+    {
+      "src": "/model/(.*)",
+      "dest": "dashboard/server.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "dashboard/public/$1"
+    }
+  ],
+  "env": {
+    "API_TARGET": "http://localhost:8400",
+    "STOP_LOSS": "2.5",
+    "TAKE_PROFIT": "6",
+    "FEE_RATE": "0.001",
+    "BANKROLL": "200"
+  }
 }
