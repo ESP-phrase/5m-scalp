@@ -71,6 +71,9 @@ func (w *WSClient) Connect() error {
 
 func (w *WSClient) readLoop() {
 	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("ws readLoop panicked", "recover", r)
+		}
 		w.mu.Lock()
 		w.running = false
 		w.mu.Unlock()
@@ -103,6 +106,7 @@ func (w *WSClient) readLoop() {
 }
 
 func (w *WSClient) reconnectLoop() {
+	attempts := 0
 	for {
 		select {
 		case <-w.done:
@@ -115,14 +119,28 @@ func (w *WSClient) reconnectLoop() {
 		w.mu.Unlock()
 
 		if !running {
-			backoff := time.Duration(1+rand.Intn(5)) * time.Second
-			slog.Info("ws reconnecting", "backoff", backoff)
+			base := time.Duration(1<<min(attempts, 5)) * time.Second
+			backoff := base + time.Duration(rand.Int63n(int64(base/2+1)))
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+			attempts++
+			slog.Info("ws reconnecting", "backoff", backoff, "attempt", attempts)
 
 			time.Sleep(backoff)
 
-			if err := w.Connect(); err != nil {
-				slog.Warn("ws reconnect failed", "err", err)
-			}
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("ws reconnect panicked", "recover", r)
+					}
+				}()
+				if err := w.Connect(); err != nil {
+					slog.Warn("ws reconnect failed", "err", err)
+				} else {
+					attempts = 0
+				}
+			}()
 		}
 
 		time.Sleep(2 * time.Second)
@@ -178,6 +196,7 @@ func (w *WSClient) parseAndDispatch(raw []byte) {
 		snap.Market = tmp.Market
 		snap.Hash = tmp.Hash
 		snap.Timestamp, _ = parseInt64(tmp.Timestamp)
+		snap.ServerTime = time.UnixMilli(snap.Timestamp)
 
 		for _, b := range tmp.Bids {
 			price, _ := parseFloat(b.Price)

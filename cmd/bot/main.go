@@ -27,6 +27,7 @@ import (
 )
 
 var running atomic.Bool
+var latTracker *engine.LatencyTracker
 var (
 	modelAssign = make(map[string]string)
 	modelMu     sync.Mutex
@@ -163,6 +164,7 @@ func main() {
 	book := engine.NewVirtualBook()
 	paperEngine := engine.NewPaperEngine(book, cfg.FillProbability, cfg.MarketFillProbability)
 	pnlTracker := engine.NewPnLTracker(book, cfg.FeeRate, cfg.Bankroll)
+	latTracker = engine.NewLatencyTracker(1000)
 
 	reg := strategy.NewRegistry()
 	mm := strategy.NewMarketMaking(cfg.MinSpread, cfg.MaxSpread, cfg.DefaultOrderSize, cfg.MaxPositionPerToken)
@@ -172,7 +174,7 @@ func main() {
 	hub := api.NewHub()
 	paperEngine.SetEventChannel(makeEvtChan(hub))
 
-	server := api.NewServer(hub, st, paperEngine, pnlTracker, reg, book)
+	server := api.NewServer(hub, st, paperEngine, pnlTracker, reg, book, latTracker)
 	server.SetMarkets(markets)
 	if err := telemetry.Init(cfg.RedisAddr, cfg.DatabaseURL, "telemetry.csv"); err != nil {
 		slog.Warn("telemetry init failed", "err", err)
@@ -367,6 +369,8 @@ func runEngine(
 	defer bookRefresh.Stop()
 
 	lastBookTime := make(map[string]time.Time)
+	lastFillCount := 0
+	stallTicks := 0
 
 	for {
 		select {
@@ -393,10 +397,17 @@ func runEngine(
 					Time: time.Now().Format(time.RFC3339),
 				})
 			}
-		case evt := <-wsEvents:
-			if evt.Book != nil {
-				lastBookTime[evt.Book.AssetID] = time.Now()
+	case evt := <-wsEvents:
+		if evt.Book != nil {
+			if !evt.Book.ServerTime.IsZero() && evt.Book.ServerTime.Before(time.Now()) {
+				latTracker.Record(engine.LatencySample{
+					Type: "ws", Ms: float64(time.Since(evt.Book.ServerTime).Milliseconds()),
+					TokenID: evt.Book.AssetID, Timestamp: time.Now(),
+				})
 			}
+			latTracker.MarkBook()
+			lastBookTime[evt.Book.AssetID] = time.Now()
+		}
 			processWSEvent(evt, book, paperEngine, pnlTracker, reg, hub, st)
 
 		case <-ticker.C:
@@ -407,6 +418,35 @@ func runEngine(
 			active := reg.Active()
 			if active == nil {
 				continue
+			}
+
+			// Purge expired orders so synthetic books can generate new ones
+			for _, o := range paperEngine.GetOpenOrders() {
+				if time.Now().After(o.ExpiresAt) {
+					paperEngine.CancelOrder(o.ID)
+					if mm, ok := active.(*strategy.MarketMakingStrategy); ok {
+						mm.RemoveOrder(o.ID)
+					}
+				}
+			}
+
+			// Stall detection: if no fills for 60s, force-reset
+			fc := pnlTracker.GetState().FillCount
+			if fc != lastFillCount {
+				lastFillCount = fc
+				stallTicks = 0
+			} else {
+				stallTicks++
+			}
+			if stallTicks > 120 {
+				slog.Warn("stall detected — force resetting engine", "stall_ticks", stallTicks)
+				paperEngine.CancelAllOrders()
+				for _, tid := range getTrackedTokens() {
+					book.ClearToken(tid)
+				}
+				active.Reset()
+				go seedBookData(getTrackedTokens(), client, book, paperEngine, pnlTracker, reg, hub, st, cfg)
+				stallTicks = 0
 			}
 
 			signals := active.OnTick()
@@ -467,6 +507,7 @@ func runEngine(
 				fill := paperEngine.FillOrder(order.ID, tradeSize)
 				if fill != nil {
 					pnlTracker.RecordFill(*fill)
+					engine.AddGas(engine.GasPerFill)
 					st.RecordFill(fill.OrderID, fill.TokenID, fill.Side, fill.Price, fill.Size)
 					if mm, ok := active.(*strategy.MarketMakingStrategy); ok {
 						mm.UpdatePosition(fill.TokenID, fill.Size, fill.Side)
@@ -582,6 +623,9 @@ func genSyntheticBook(
 		asks[i] = engine.Level{Price: a.Price, Size: a.Size}
 	}
 	book.UpdateBook(snap.AssetID, bids, asks)
+	if latTracker != nil {
+		latTracker.MarkBook()
+	}
 
 	hub.Broadcast(api.SSEEvent{
 		Type: "book",
@@ -624,6 +668,10 @@ func feedBookToEngine(
 		asks[i] = engine.Level{Price: a.Price, Size: a.Size}
 	}
 	book.UpdateBook(snap.AssetID, bids, asks)
+
+	if latTracker != nil {
+		latTracker.MarkBook()
+	}
 
 	if hub != nil {
 		hub.Broadcast(api.SSEEvent{
@@ -697,6 +745,7 @@ func processWSEvent(
 			fills := paperEngine.HandleTrade(evt.Trade.AssetID, evt.Trade.Side, price, size)
 		for _, fill := range fills {
 			pnlTracker.RecordFill(fill)
+			engine.AddGas(engine.GasPerFill)
 			st.RecordFill(fill.OrderID, fill.TokenID, fill.Side, fill.Price, fill.Size)
 
 			if mm, ok := reg.Active().(*strategy.MarketMakingStrategy); ok {
@@ -799,6 +848,12 @@ func processSignals(
 			paperEngine.SetOrderModelMeta(order.ID, modelTag, lat)
 			slog.Info("placed paper order", "id", order.ID, "side", sig.Side, "price", sig.Price, "size", sig.Size, "model", modelTag, "pred", pred, "lat_ms", lat)
 			telemetry.PublishOrder(order, mid, pred, modelTag, lat)
+			if latTracker != nil {
+				latTracker.Record(engine.LatencySample{
+					Type: "e2e", Ms: float64(latTracker.SinceBook().Milliseconds()),
+					TokenID: order.TokenID, Timestamp: time.Now(),
+				})
+			}
 
 				hub.Broadcast(api.SSEEvent{
 					Type: "order",
@@ -954,7 +1009,14 @@ func checkOrderBounds(
 			closeFill.Side = "BUY"
 		}
 		pnlTracker.RecordFill(closeFill)
+		engine.AddGas(engine.GasPerFill)
 		telemetry.PublishClose(o.ID, o.TokenID, o.Side, reason, mid, o.Filled, mid, orderPnl)
+		if latTracker != nil {
+			latTracker.Record(engine.LatencySample{
+				Type: "close", Ms: float64(latTracker.SinceBook().Milliseconds()),
+				TokenID: o.TokenID, Timestamp: time.Now(),
+			})
+		}
 
 		hub.Broadcast(api.SSEEvent{
 			Type: "log",

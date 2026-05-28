@@ -18,6 +18,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+var startTime = time.Now()
+
 type SSEEvent struct {
 	Type string      `json:"type"`
 	Data interface{} `json:"data"`
@@ -73,6 +75,7 @@ type Server struct {
 	pnlTracker   *engine.PnLTracker
 	strategyReg  *strategy.Registry
 	book         *engine.VirtualBook
+	latTracker   *engine.LatencyTracker
 	router       chi.Router
 	running      bool
 	mu           sync.Mutex
@@ -88,6 +91,7 @@ func NewServer(
 	pnl *engine.PnLTracker,
 	reg *strategy.Registry,
 	book *engine.VirtualBook,
+	lat *engine.LatencyTracker,
 ) *Server {
 	s := &Server{
 		hub:         hub,
@@ -96,6 +100,7 @@ func NewServer(
 		pnlTracker:  pnl,
 		strategyReg: reg,
 		book:        book,
+		latTracker:  lat,
 		running:     true,
 	}
 
@@ -105,6 +110,7 @@ func NewServer(
 	r.Use(corsMiddleware)
 	r.Use(silentLogger)
 
+	r.Get("/api/health", s.handleHealth)
 	r.Get("/api/events", s.handleSSE)
 	r.Get("/api/stats", s.handleStats)
 	r.Post("/api/bot/start", s.handleStart)
@@ -379,6 +385,60 @@ func (s *Server) handleMarkets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, summaries)
 }
 
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	state := s.pnlTracker.GetState()
+	fills := s.pnlTracker.GetRecentFills(1)
+	lastFill := ""
+	if len(fills) > 0 {
+		lastFill = fills[len(fills)-1].Time.Format(time.RFC3339)
+	}
+	lat := s.latTracker
+	wsAvg, wsP50, wsP99, wsN := lat.Stats("ws")
+	e2eAvg, _, _, e2eN := lat.Stats("e2e")
+	closeAvg, _, _, closeN := lat.Stats("close")
+
+	// Reality scores per open order
+	type realityInfo struct {
+		OrderID string  `json:"order_id"`
+		Erosion float64 `json:"erosion_pusd"`
+		Score   float64 `json:"score_pct"`
+		PnL     float64 `json:"displayed_pnl"`
+		RealPnL float64 `json:"real_pnl"`
+	}
+	var real []realityInfo
+	for _, o := range s.paperEngine.GetOpenOrders() {
+		if o.Filled <= 0 { continue }
+		var orderPnL float64
+		if o.Side == "BUY" {
+			orderPnL = (o.EntryMid - o.Price) * o.Filled
+		} else {
+			orderPnL = (o.Price - o.EntryMid) * o.Filled
+		}
+		erosion, score := lat.RealityScore(wsP50, e2eAvg, closeAvg, orderPnL, 0.001, 1)
+		real = append(real, realityInfo{
+			OrderID: o.ID, Erosion: erosion, Score: score,
+			PnL: orderPnL, RealPnL: orderPnL - erosion,
+		})
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"uptime_sec":   time.Since(startTime).Seconds(),
+		"last_fill":    lastFill,
+		"open_orders":  len(s.paperEngine.GetOpenOrders()),
+		"running":      s.running,
+		"pnl":          state.Total,
+		"fill_count":   state.FillCount,
+		"ws_avg_ms":    wsAvg,
+		"ws_p99_ms":    wsP99,
+		"e2e_avg_ms":   e2eAvg,
+		"close_avg_ms": closeAvg,
+		"latency_samples": map[string]int{"ws": wsN, "e2e": e2eN, "close": closeN},
+		"gas_per_fill":    engine.GasPerFill,
+		"total_gas_pusd":  engine.TotalGas(),
+		"reality_scores": real,
+	})
+}
+
 func (s *Server) handleFills(w http.ResponseWriter, r *http.Request) {
 	fills := s.pnlTracker.GetRecentFills(50)
 
@@ -407,53 +467,11 @@ func (s *Server) handleFills(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCancelAllOrders(w http.ResponseWriter, r *http.Request) {
-	openOrders := s.paperEngine.GetOpenOrders()
-	count := 0
-	var totalRealized float64
-
-	for _, o := range openOrders {
-		if o.Filled <= 0 {
-			s.paperEngine.CancelOrder(o.ID)
-			count++
-			continue
-		}
-		mid := s.book.Midpoint(o.TokenID)
-		if mid <= 0 {
-			mid = o.EntryMid
-		}
-		if mid <= 0 {
-			mid = o.Price
-		}
-		closeSide := "SELL"
-		if o.Side == "SELL" {
-			closeSide = "BUY"
-		}
-		closeFill := engine.Fill{
-			OrderID:  o.ID,
-			TokenID:  o.TokenID,
-			Side:     closeSide,
-			Price:    mid,
-			Size:     o.Filled,
-			Time:     time.Now(),
-		}
-		s.pnlTracker.RecordFill(closeFill)
-		s.paperEngine.CancelOrder(o.ID)
-		if mm, ok := s.strategyReg.Active().(*strategy.MarketMakingStrategy); ok {
-			mm.UpdatePosition(o.TokenID, o.Filled, closeSide)
-		}
-		var orderPnl float64
-		if o.Side == "BUY" {
-			orderPnl = (mid - o.Price) * o.Filled
-		} else {
-			orderPnl = (o.Price - mid) * o.Filled
-		}
-		totalRealized += orderPnl
-		count++
-	}
+	totalRealized := s.pnlTracker.ForceRealize(s.book)
+	count := s.paperEngine.CancelAllOrders()
 	if mm, ok := s.strategyReg.Active().(*strategy.MarketMakingStrategy); ok {
 		mm.RemoveAllOrders()
 	}
-
 	s.hub.Broadcast(SSEEvent{
 		Type: "log",
 		Data: map[string]string{"message": fmt.Sprintf("Closed %d orders, realized $%.2f", count, totalRealized)},

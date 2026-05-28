@@ -8,16 +8,23 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="alert-banner" class="alert-banner">
-    <span class="alert-icon">&#9888;</span>
-    <span>PAPER TRADING MODE — No real money at risk</span>
-  </div>
-
   <div class="container">
     <header>
       <h1>Scalp5</h1>
       <span class="subtitle">Polymarket 5m BTC Scalping Bot</span>
     </header>
+
+    <div class="compare-bar" id="compare-bar">
+      <div class="compare-slot" id="cmp-a"><strong>A: TP=6 SL=3</strong><br><span>$--</span></div>
+      <div class="compare-slot" id="cmp-b"><strong>B: TP=5 SL=2.5</strong><br><span>$--</span></div>
+      <div class="compare-slot" id="cmp-c"><strong>C: TP=4 SL=2</strong><br><span>$--</span></div>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab active" data-slot="a">A: TP=6 SL=3</button>
+      <button class="tab" data-slot="b">B: TP=5 SL=2.5</button>
+      <button class="tab" data-slot="c">C: TP=4 SL=2</button>
+    </div>
 
     <div class="controls">
       <button id="btn-start" class="btn btn-green">Start Bot</button>
@@ -64,6 +71,18 @@
       </div>
     </div>
 
+    <div class="panel">
+      <h2>Latency &amp; PnL Reality</h2>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div><span class="stat-label">WS Book Lag</span> <strong id="lat-ws">--</strong>ms</div>
+        <div><span class="stat-label">E2E Pipeline</span> <strong id="lat-e2e">--</strong>ms</div>
+        <div><span class="stat-label">Close Exec</span> <strong id="lat-close">--</strong>ms</div>
+        <div><span class="stat-label">Gas/Fill</span> <strong id="lat-gas">$0.02</strong></div>
+        <div><span class="stat-label">Reality Score</span> <strong id="lat-reality">--</strong>%</div>
+      </div>
+    </div>
+
+    <div class="model-unified" style="display:none"></div>
     <div class="panel">
       <h2>Model A/B Comparison</h2>
       <div class="model-unified">

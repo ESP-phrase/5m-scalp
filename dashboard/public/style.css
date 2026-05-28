@@ -57,6 +57,47 @@ header h1 {
   flex-wrap: wrap;
 }
 
+.compare-bar {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.compare-slot {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 8px 12px;
+  text-align: center;
+  font-size: 13px;
+}
+.compare-slot strong { color: #94a3b8; }
+.compare-slot span { font-size: 18px; font-weight: 700; }
+.compare-slot .positive { color: #10b981; }
+.compare-slot .negative { color: #ef4444; }
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.tab {
+  padding: 6px 16px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+}
+.tab.active {
+  background: #0f172a;
+  color: #f1f5f9;
+  border-color: #3b82f6;
+  font-weight: 600;
+}
+
 .btn {
   padding: 8px 20px;
   border: none;

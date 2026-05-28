@@ -11,13 +11,14 @@ type OrderBookLevel struct {
 }
 
 type BookSnapshot struct {
-	EventType string           `json:"event_type"`
-	AssetID   string           `json:"asset_id"`
-	Market    string           `json:"market"`
-	Bids      []OrderBookLevel `json:"bids"`
-	Asks      []OrderBookLevel `json:"asks"`
-	Timestamp int64            `json:"timestamp,string"`
-	Hash      string           `json:"hash"`
+	EventType  string           `json:"event_type"`
+	AssetID    string           `json:"asset_id"`
+	Market     string           `json:"market"`
+	Bids       []OrderBookLevel `json:"bids"`
+	Asks       []OrderBookLevel `json:"asks"`
+	Timestamp  int64            `json:"timestamp,string"`
+	Hash       string           `json:"hash"`
+	ServerTime time.Time        `json:"-"`
 }
 
 type PriceChange struct {

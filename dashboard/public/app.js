@@ -1,10 +1,39 @@
 const API = '';
-
+let currentSlot = 'a';
 let depthChart = null;
 let fills = [];
 let orders = {};
 
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+// Tab switching
+$$('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    $$('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentSlot = tab.dataset.slot;
+    fetchStats();
+    fetchFills();
+    fetchMarkets();
+    connectSSE();
+  });
+});
+
+// Comparison bar: poll all 3 instances every 3 seconds
+async function updateCompareBar() {
+  for (const s of ['a','b','c']) {
+    try {
+      const r = await fetch('/api-' + s + '/stats');
+      if (!r.ok) continue;
+      const d = await r.json();
+      const el = $('#cmp-' + s).querySelector('span');
+      el.textContent = '$' + (d.pnl.total || 0).toFixed(2);
+      el.className = d.pnl.total >= 0 ? 'positive' : 'negative';
+    } catch (e) {}
+  }
+}
+setInterval(updateCompareBar, 3000);
 
 function initChart() {
   const ctx = $('#depth-chart').getContext('2d');
@@ -104,8 +133,12 @@ function updateOrders(openOrders, midpoints) {
   }).join('');
 }
 
+function getApiPath(path) {
+  return '/api-' + currentSlot + path;
+}
+
 function cancelOrder(orderId) {
-  fetch(API + '/api/orders/' + orderId + '/cancel', { method: 'POST' })
+  fetch(getApiPath('/orders/' + orderId + '/cancel'), { method: 'POST' })
     .then(r => r.json())
     .then(d => { addLog(d.ok ? 'Order cancelled: ' + orderId : 'Cancel failed: ' + orderId); fetchStats(); })
     .catch(() => addLog('Cancel failed: ' + orderId));
@@ -176,7 +209,7 @@ function setRunning(running) {
 }
 
 function connectSSE() {
-  const es = new EventSource('/events');
+  const es = new EventSource('/events-' + currentSlot);
 
   es.addEventListener('book', (e) => {
     try {
@@ -229,7 +262,7 @@ function connectSSE() {
 
 async function fetchStats() {
   try {
-    const resp = await fetch(API + '/api/stats');
+    const resp = await fetch(getApiPath('/stats'));
     if (!resp.ok) { addLog(`Stats API error: ${resp.status}`); return; }
     const data = await resp.json();
     setApiStatus(true);
@@ -249,7 +282,7 @@ async function fetchStats() {
 
 async function fetchFills() {
   try {
-    const resp = await fetch(API + '/api/fills');
+    const resp = await fetch(getApiPath('/fills'));
     if (!resp.ok) return;
     const data = await resp.json();
     const fillsArr = Array.isArray(data) ? data : (data.fills || []);
@@ -274,7 +307,7 @@ async function fetchFills() {
 
 async function fetchMarkets() {
   try {
-    const resp = await fetch(API + '/api/markets');
+    const resp = await fetch(getApiPath('/markets'));
     if (!resp.ok) return;
     const markets = await resp.json();
     const tbody = $('#markets-body');
@@ -293,7 +326,7 @@ async function fetchMarkets() {
 
 async function apiCall(method, path, body) {
   try {
-    const resp = await fetch(API + path, {
+    const resp = await fetch(getApiPath(path), {
       method,
       headers: body ? { 'Content-Type': 'application/json' } : {},
       body: body ? JSON.stringify(body) : undefined,
@@ -308,7 +341,7 @@ async function apiCall(method, path, body) {
 }
 
 function closeAllOrders() {
-  fetch(API + '/api/orders/cancel-all', { method: 'POST' })
+  fetch(getApiPath('/orders/cancel-all'), { method: 'POST' })
     .then(r => r.json())
     .then(d => { if (d.ok) addLog('Cancelled ' + (d.count || 'all') + ' orders'); })
     .catch(e => addLog('Cancel failed: ' + e.message));
@@ -318,20 +351,20 @@ function closeAllOrders() {
 
 $('#btn-start').addEventListener('click', () => {
   addLog('Starting bot...');
-  apiCall('POST', '/api/bot/start');
+  apiCall('POST', '/bot/start');
 });
 $('#btn-stop').addEventListener('click', () => {
   addLog('Stopping bot...');
-  apiCall('POST', '/api/bot/stop');
+  apiCall('POST', '/bot/stop');
 });
 $('#strategy-select').addEventListener('change', (e) => {
-  apiCall('POST', '/api/bot/strategy', { name: e.target.value });
+  apiCall('POST', '/bot/strategy', { name: e.target.value });
 });
 $('#btn-close-all').addEventListener('click', closeAllOrders);
 
 async function callModelProxy(path, features) {
   try {
-    const resp = await fetch(API + path, {
+    const resp = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ features: [features] }),
@@ -364,6 +397,28 @@ setInterval(updateModelPanels, 1000);
 setInterval(fetchStats, 500);
 setInterval(fetchFills, 500);
 setInterval(fetchMarkets, 30000);
+
+async function checkHealth() {
+  try {
+    const resp = await fetch(getApiPath('/health'));
+    if (!resp.ok) return;
+    const h = await resp.json();
+    if (h.last_fill) {
+      const age = (Date.now() - new Date(h.last_fill).getTime()) / 1000;
+      if (age > 30) addLog('STALL: no fills in ' + Math.round(age) + 's');
+    }
+    if (!h.running) addLog('Bot stopped');
+    $('#lat-ws').textContent = (h.ws_avg_ms || 0).toFixed(1);
+    $('#lat-e2e').textContent = (h.e2e_avg_ms || 0).toFixed(1);
+    $('#lat-close').textContent = (h.close_avg_ms || 0).toFixed(1);
+    $('#lat-gas').textContent = '$' + (h.total_gas_pusd || 0).toFixed(2);
+    if (h.reality_scores && h.reality_scores.length > 0) {
+      const avg = h.reality_scores.reduce((s, r) => s + r.score_pct, 0) / h.reality_scores.length;
+      $('#lat-reality').textContent = avg.toFixed(0) + '%';
+    }
+  } catch (err) {}
+}
+setInterval(checkHealth, 5000);
 
 try {
   initChart();

@@ -143,3 +143,10 @@ func PublishClose(orderID, tokenID, side, reason string, price, filled, mid, pnl
 	_ = appendCSVRow(row)
 	insertDB(ts, "close", tokenID, mid, 0, 0, price, filled, side, orderID, reason, 0, 0, pnl, reason)
 }
+
+func PublishLatency(typ string, ms float64) {
+	ts := time.Now().UnixMilli()
+	row := []string{fmt.Sprintf("%d", ts), "latency", "", "", "", "", "", fmt.Sprintf("%.3f", ms), "", "", typ}
+	_ = appendCSVRow(row)
+	insertDB(ts, "latency", "", 0, 0, 0, 0, ms, "", "", typ, ms, 0, 0, "")
+}

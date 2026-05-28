@@ -55,6 +55,7 @@ type Config struct {
 	Bankroll             float64
 	RedisAddr            string
 	DatabaseURL          string
+	PositionAnalyzerURL  string
 }
 
 func Load() *Config {
@@ -78,6 +79,7 @@ func Load() *Config {
 		Bankroll:             getEnvFloat("BANKROLL", 200),
 		RedisAddr:            getEnv("REDIS_ADDR", "localhost:6379"),
 		DatabaseURL:          getEnv("DATABASE_URL", ""),
+		PositionAnalyzerURL:  getEnv("POSITION_ANALYZER_URL", "http://127.0.0.1:8003"),
 	}
 }
 
