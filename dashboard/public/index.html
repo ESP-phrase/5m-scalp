@@ -15,9 +15,9 @@
     </header>
 
     <div class="compare-bar" id="compare-bar">
-      <div class="compare-slot" id="cmp-a"><strong>A: TP=6 SL=3</strong><br><span>$--</span></div>
-      <div class="compare-slot" id="cmp-b"><strong>B: TP=5 SL=2.5</strong><br><span>$--</span></div>
-      <div class="compare-slot" id="cmp-c"><strong>C: TP=4 SL=2</strong><br><span>$--</span></div>
+      <div class="compare-slot" id="cmp-a"><strong>A: TP=6 SL=3</strong><br><span>$--</span><br><small>gas:$--</small></div>
+      <div class="compare-slot" id="cmp-b"><strong>B: TP=5 SL=2.5</strong><br><span>$--</span><br><small>gas:$--</small></div>
+      <div class="compare-slot" id="cmp-c"><strong>C: TP=4 SL=2</strong><br><span>$--</span><br><small>gas:$--</small></div>
     </div>
 
     <div class="tab-bar">
@@ -29,6 +29,7 @@
     <div class="controls">
       <button id="btn-start" class="btn btn-green">Start Bot</button>
       <button id="btn-stop" class="btn btn-red" disabled>Stop Bot</button>
+      <button id="btn-panic" class="btn btn-red" style="background:#dc2626;font-weight:900">PANIC</button>
       <select id="strategy-select" class="select">
         <option value="market_making" selected>Market Making</option>
       </select>
@@ -77,7 +78,7 @@
         <div><span class="stat-label">WS Book Lag</span> <strong id="lat-ws">--</strong>ms</div>
         <div><span class="stat-label">E2E Pipeline</span> <strong id="lat-e2e">--</strong>ms</div>
         <div><span class="stat-label">Close Exec</span> <strong id="lat-close">--</strong>ms</div>
-        <div><span class="stat-label">Gas/Fill</span> <strong id="lat-gas">$0.02</strong></div>
+        <div><span class="stat-label">Gas/Fill | Total</span> <strong id="lat-gas">$0.02 | $--</strong></div>
         <div><span class="stat-label">Reality Score</span> <strong id="lat-reality">--</strong>%</div>
       </div>
     </div>

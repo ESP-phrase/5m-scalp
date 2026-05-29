@@ -15,6 +15,22 @@
   ],
   "routes": [
     {
+      "src": "/api-a/(.*)",
+      "dest": "dashboard/server.js"
+    },
+    {
+      "src": "/api-b/(.*)",
+      "dest": "dashboard/server.js"
+    },
+    {
+      "src": "/api-c/(.*)",
+      "dest": "dashboard/server.js"
+    },
+    {
+      "src": "/events-(.*)",
+      "dest": "dashboard/server.js"
+    },
+    {
       "src": "/api/(.*)",
       "dest": "dashboard/server.js"
     },
@@ -32,10 +48,14 @@
     }
   ],
   "env": {
+    "API_A": "http://localhost:8401",
+    "API_B": "http://localhost:8402",
+    "API_C": "http://localhost:8403",
     "API_TARGET": "http://localhost:8400",
     "STOP_LOSS": "2.5",
-    "TAKE_PROFIT": "6",
+    "TAKE_PROFIT": "5",
     "FEE_RATE": "0.001",
-    "BANKROLL": "200"
+    "BANKROLL": "200",
+    "PORT": "3005"
   }
 }

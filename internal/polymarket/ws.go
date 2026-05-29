@@ -24,12 +24,14 @@ type WSClient struct {
 }
 
 func NewWSClient(wsURL string, tokenIDs []string) *WSClient {
-	return &WSClient{
+	w := &WSClient{
 		url:      wsURL,
 		tokenIDs: tokenIDs,
 		events:   make(chan WSEvent, 2048),
 		done:     make(chan struct{}),
 	}
+	go w.reconnectLoop()
+	return w
 }
 
 func (w *WSClient) Events() <-chan WSEvent {
@@ -64,7 +66,6 @@ func (w *WSClient) Connect() error {
 	slog.Info("webosocket connected", "tokens", len(w.tokenIDs))
 
 	go w.readLoop()
-	go w.reconnectLoop()
 
 	return nil
 }
@@ -135,6 +136,12 @@ func (w *WSClient) reconnectLoop() {
 						slog.Error("ws reconnect panicked", "recover", r)
 					}
 				}()
+				w.mu.Lock()
+				if w.conn != nil {
+					w.conn.Close()
+					w.conn = nil
+				}
+				w.mu.Unlock()
 				if err := w.Connect(); err != nil {
 					slog.Warn("ws reconnect failed", "err", err)
 				} else {

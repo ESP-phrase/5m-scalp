@@ -112,7 +112,7 @@ func (lt *LatencyTracker) Stats(typ string) (avg, p50, p99 float64, count int) {
 // RealityScore returns pUSD erosion and reality percentage including gas fees.
 func (lt *LatencyTracker) RealityScore(bookLatMs, e2eLatMs, closeLatMs, positionPnL, driftRate float64, fillCount int) (erosion, score float64) {
 	if driftRate <= 0 {
-		driftRate = 0.001
+		driftRate = 0.00005
 	}
 	totalLatSec := (bookLatMs + e2eLatMs + closeLatMs) / 1000.0
 	latErosion := math.Abs(driftRate * totalLatSec * math.Abs(positionPnL))

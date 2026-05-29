@@ -133,6 +133,15 @@ func (pe *PaperEngine) FillOrder(orderID string, size float64) *Fill {
 		Size:    size,
 		Time:    time.Now(),
 	}
+	// Slippage: bigger fills relative to order size get worse prices
+	slippage := rand.Float64() * 0.005 * (size / order.Size)
+	if fill.Side == "BUY" {
+		fill.Price = order.Price * (1 + slippage)
+	} else {
+		fill.Price = order.Price * (1 - slippage)
+	}
+	if fill.Price < 0.001 { fill.Price = 0.001 }
+	if fill.Price > 0.999 { fill.Price = 0.999 }
 
 	if pe.eventCh != nil {
 		pe.eventCh <- map[string]interface{}{

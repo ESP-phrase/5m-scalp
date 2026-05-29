@@ -120,6 +120,7 @@ func NewServer(
 	r.Get("/api/fills", s.handleFills)
 	r.Post("/api/orders/cancel-all", s.handleCancelAllOrders)
 	r.Post("/api/orders/{id}/cancel", s.handleCancelOrder)
+	r.Post("/api/panic", s.handlePanic)
 
 	s.router = r
 	return s
@@ -414,6 +415,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		} else {
 			orderPnL = (o.Price - o.EntryMid) * o.Filled
 		}
+		if orderPnL < 0.10 && orderPnL > -0.10 {
+			continue // skip micro-positions dominated by gas
+		}
 		erosion, score := lat.RealityScore(wsP50, e2eAvg, closeAvg, orderPnL, 0.001, 1)
 		real = append(real, realityInfo{
 			OrderID: o.ID, Erosion: erosion, Score: score,
@@ -467,17 +471,38 @@ func (s *Server) handleFills(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCancelAllOrders(w http.ResponseWriter, r *http.Request) {
-	totalRealized := s.pnlTracker.ForceRealize(s.book)
+	totalRealized, feeTotal, gasTotal := s.pnlTracker.ForceRealize(s.book)
 	count := s.paperEngine.CancelAllOrders()
 	if mm, ok := s.strategyReg.Active().(*strategy.MarketMakingStrategy); ok {
 		mm.RemoveAllOrders()
 	}
 	s.hub.Broadcast(SSEEvent{
 		Type: "log",
-		Data: map[string]string{"message": fmt.Sprintf("Closed %d orders, realized $%.2f", count, totalRealized)},
+		Data: map[string]string{"message": fmt.Sprintf("Closed %d orders, realized $%.2f (fees: $%.2f, gas: $%.2f)", count, totalRealized, feeTotal, gasTotal)},
 		Time: time.Now().Format(time.RFC3339),
 	})
-	writeJSON(w, map[string]interface{}{"ok": true, "count": count, "realized": totalRealized})
+	writeJSON(w, map[string]interface{}{"ok": true, "count": count, "realized": totalRealized, "fees": feeTotal, "gas": gasTotal})
+}
+
+func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
+	// Immediate: crystallize + cancel all + stop engine
+	s.mu.Lock()
+	s.running = false
+	s.mu.Unlock()
+	if s.onRunningChanged != nil {
+		s.onRunningChanged(false)
+	}
+	totalRealized, feeTotal, gasTotal := s.pnlTracker.ForceRealize(s.book)
+	count := s.paperEngine.CancelAllOrders()
+	if mm, ok := s.strategyReg.Active().(*strategy.MarketMakingStrategy); ok {
+		mm.RemoveAllOrders()
+	}
+	s.hub.Broadcast(SSEEvent{
+		Type: "log",
+		Data: map[string]string{"message": fmt.Sprintf("PANIC: stopped engine, closed %d orders, realized $%.2f", count, totalRealized)},
+		Time: time.Now().Format(time.RFC3339),
+	})
+	writeJSON(w, map[string]interface{}{"ok": true, "count": count, "realized": totalRealized, "fees": feeTotal, "gas": gasTotal, "stopped": true})
 }
 
 func (s *Server) handleCancelOrder(w http.ResponseWriter, r *http.Request) {

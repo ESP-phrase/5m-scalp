@@ -51,6 +51,7 @@ type Config struct {
 	MaxSpread            float64
 	TakeProfit           float64
 	StopLoss             float64
+	ScalpProfit          float64
 	FeeRate              float64
 	Bankroll             float64
 	RedisAddr            string
@@ -75,6 +76,7 @@ func Load() *Config {
 		MaxSpread:            getEnvFloat("MAX_SPREAD", 0.10),
 		TakeProfit:           getEnvFloat("TAKE_PROFIT", 0),
 		StopLoss:             getEnvFloat("STOP_LOSS", 0),
+		ScalpProfit:          getEnvFloat("SCALP_PROFIT", 0),
 		FeeRate:              getEnvFloat("FEE_RATE", 0.001),
 		Bankroll:             getEnvFloat("BANKROLL", 200),
 		RedisAddr:            getEnv("REDIS_ADDR", "localhost:6379"),

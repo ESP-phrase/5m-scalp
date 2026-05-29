@@ -30,6 +30,9 @@ async function updateCompareBar() {
       const el = $('#cmp-' + s).querySelector('span');
       el.textContent = '$' + (d.pnl.total || 0).toFixed(2);
       el.className = d.pnl.total >= 0 ? 'positive' : 'negative';
+      const gasEl = $('#cmp-' + s).querySelector('small');
+      const h = await fetch('/api-' + s + '/health').then(r => r.json()).catch(() => ({}));
+      gasEl.textContent = 'gas:$' + (h.total_gas_pusd || 0).toFixed(2);
     } catch (e) {}
   }
 }
@@ -341,12 +344,11 @@ async function apiCall(method, path, body) {
 }
 
 function closeAllOrders() {
+  $('#orders-body').innerHTML = '<tr><td colspan="8" class="empty">Closing...</td></tr>';
   fetch(getApiPath('/orders/cancel-all'), { method: 'POST' })
     .then(r => r.json())
-    .then(d => { if (d.ok) addLog('Cancelled ' + (d.count || 'all') + ' orders'); })
-    .catch(e => addLog('Cancel failed: ' + e.message));
-  $('#orders-body').innerHTML = '<tr><td colspan="8" class="empty">Cancelling all...</td></tr>';
-  fetchStats();
+    .then(d => { if (d.ok) addLog('Closed ' + (d.count||'all') + ' orders | $' + (d.realized||0).toFixed(2)); });
+  setTimeout(() => fetchStats(), 100);
 }
 
 $('#btn-start').addEventListener('click', () => {
@@ -361,6 +363,17 @@ $('#strategy-select').addEventListener('change', (e) => {
   apiCall('POST', '/bot/strategy', { name: e.target.value });
 });
 $('#btn-close-all').addEventListener('click', closeAllOrders);
+
+$('#btn-panic').addEventListener('click', () => {
+  addLog('PANIC: stopping all instances...');
+  ['a','b','c'].forEach(s => {
+    fetch('/api-' + s + '/panic', { method: 'POST' })
+      .then(r => r.json())
+      .then(d => { if (d.ok) addLog('Panic ' + s.toUpperCase() + ': ' + (d.count||0) + ' orders closed, $' + (d.realized||0).toFixed(2)); })
+      .catch(() => addLog('Panic ' + s.toUpperCase() + ': failed'));
+  });
+  fetchStats();
+});
 
 async function callModelProxy(path, features) {
   try {
@@ -394,8 +407,8 @@ async function updateModelPanels() {
 }
 
 setInterval(updateModelPanels, 1000);
-setInterval(fetchStats, 500);
-setInterval(fetchFills, 500);
+setInterval(fetchStats, 250);
+setInterval(fetchFills, 250);
 setInterval(fetchMarkets, 30000);
 
 async function checkHealth() {
@@ -411,7 +424,7 @@ async function checkHealth() {
     $('#lat-ws').textContent = (h.ws_avg_ms || 0).toFixed(1);
     $('#lat-e2e').textContent = (h.e2e_avg_ms || 0).toFixed(1);
     $('#lat-close').textContent = (h.close_avg_ms || 0).toFixed(1);
-    $('#lat-gas').textContent = '$' + (h.total_gas_pusd || 0).toFixed(2);
+    $('#lat-gas').textContent = '$' + (h.gas_per_fill || 0.02).toFixed(2) + ' | $' + (h.total_gas_pusd || 0).toFixed(2);
     if (h.reality_scores && h.reality_scores.length > 0) {
       const avg = h.reality_scores.reduce((s, r) => s + r.score_pct, 0) / h.reality_scores.length;
       $('#lat-reality').textContent = avg.toFixed(0) + '%';
@@ -421,12 +434,12 @@ async function checkHealth() {
 setInterval(checkHealth, 5000);
 
 try {
+  setApiStatus(false);
   initChart();
   connectSSE();
   fetchStats();
   fetchFills();
   fetchMarkets();
-  setApiStatus(false);
 
   $('#btn-close-lgb').addEventListener('click', () => {
     addLog('Close all (LGB)');

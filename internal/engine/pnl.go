@@ -120,11 +120,11 @@ func (p *PnLTracker) GetPositions() []Position {
 }
 
 // ForceRealize converts all unrealized PnL to realized by closing every position at its current mid.
-// Used when "Close All" is called — crystallizes paper PnL immediately.
-func (p *PnLTracker) ForceRealize(book *VirtualBook) float64 {
+// Deducts fee_rate + gas_per_fill. Returns total crystallized PnL (net of fees and gas).
+func (p *PnLTracker) ForceRealize(book *VirtualBook) (total, feeTotal, gasTotal float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var total float64
+	var posCount int
 	for tokenID, pos := range p.positions {
 		if pos.Size <= 0 {
 			continue
@@ -133,13 +133,17 @@ func (p *PnLTracker) ForceRealize(book *VirtualBook) float64 {
 		if mid <= 0 {
 			continue
 		}
+		posCount++
 		fee := pos.Size * mid * p.feeRate
-		pnl := pos.Size*(mid-pos.AvgEntry) - fee
+		gas := GasPerFill
+		pnl := pos.Size*(mid-pos.AvgEntry) - fee - gas
 		p.realized += pnl
 		total += pnl
+		feeTotal += fee
+		gasTotal += gas
 		pos.Size = 0
 	}
-	return total
+	return
 }
 
 func (p *PnLTracker) GetRecentFills(n int) []Fill {

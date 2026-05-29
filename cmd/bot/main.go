@@ -28,6 +28,10 @@ import (
 
 var running atomic.Bool
 var latTracker *engine.LatencyTracker
+var modelClient = &http.Client{
+	Timeout:   2 * time.Second,
+	Transport: &http.Transport{MaxIdleConns: 10, IdleConnTimeout: 30 * time.Second},
+}
 var (
 	modelAssign = make(map[string]string)
 	modelMu     sync.Mutex
@@ -87,7 +91,7 @@ func callModelServer(modelTag string, features []float64) (float64, float64, err
 	payload := map[string]interface{}{"features": []interface{}{features}}
 	b, _ := json.Marshal(payload)
 	start := time.Now()
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(b))
+	resp, err := modelClient.Post(url, "application/json", bytes.NewBuffer(b))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -130,6 +134,15 @@ func main() {
 
 	config.LoadDotEnv(".env")
 	cfg := config.Load()
+
+	// Singleton guard — prevent duplicate bot instances
+	lockFile := cfg.DBPath + ".lock"
+	if _, err := os.Stat(lockFile); err == nil {
+		slog.Error("bot already running", "lock", lockFile)
+		os.Exit(1)
+	}
+	os.WriteFile(lockFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
+	defer os.Remove(lockFile)
 
 	st, err := store.New(cfg.DBPath)
 	if err != nil {
@@ -320,7 +333,7 @@ func main() {
 							slog.Error("TP/SL check panicked", "recover", r)
 						}
 					}()
-					checkOrderBounds(book, paperEngine, pnlTracker, reg, hub, cfg.TakeProfit, cfg.StopLoss)
+					checkOrderBounds(book, paperEngine, pnlTracker, reg, hub, cfg.TakeProfit, cfg.StopLoss, cfg.ScalpProfit)
 				}()
 			}
 		}()
@@ -417,6 +430,17 @@ func runEngine(
 
 			active := reg.Active()
 			if active == nil {
+				continue
+			}
+
+			// Circuit breaker: max 20% drawdown from bankroll
+			state := pnlTracker.GetState()
+			if state.Bankroll > 0 && state.Total < -state.Bankroll*0.20 {
+				slog.Error("circuit breaker: max drawdown reached", "pnl", state.Total, "bankroll", state.Bankroll)
+				paperEngine.CancelAllOrders()
+				active.Reset()
+				running.Store(false)
+				hub.Broadcast(api.SSEEvent{Type: "log", Data: map[string]string{"message": "CIRCUIT BREAKER: Max drawdown reached"}, Time: time.Now().Format(time.RFC3339)})
 				continue
 			}
 
@@ -517,7 +541,7 @@ func runEngine(
 
 			// Check per-order take-profit / stop-loss
 			if cfg.TakeProfit > 0 || cfg.StopLoss > 0 {
-				checkOrderBounds(book, paperEngine, pnlTracker, reg, hub, cfg.TakeProfit, cfg.StopLoss)
+				checkOrderBounds(book, paperEngine, pnlTracker, reg, hub, cfg.TakeProfit, cfg.StopLoss, cfg.ScalpProfit)
 			}
 
 		case <-bookRefresh.C:
@@ -591,7 +615,16 @@ func genSyntheticBook(
 	st *store.Store,
 	cfg *config.Config,
 ) {
-	mid := 0.50
+	mid := book.Midpoint(tokenID)
+	if mid <= 0 || mid < 0.01 || mid > 0.99 {
+		mid = 0.50
+	}
+	// Tighten to active range: clamp near 0.50 for 5m markets
+	if mid > 0.70 {
+		mid = 0.50 + rand.Float64()*0.04
+	} else if mid < 0.30 {
+		mid = 0.50 - rand.Float64()*0.04
+	}
 	spread := 0.04 + rand.Float64()*0.02
 	tick := 0.01
 
@@ -836,8 +869,7 @@ func processSignals(
 			features := []float64{mid, bestBid, bestAsk}
 			pred, lat, err := callModelServer(modelTag, features)
 			if err != nil {
-				addLogErr := func() { slog.Debug("model call failed", "err", err) }
-				_ = addLogErr
+				pred = 0.5
 			}
 
 			order := paperEngine.PlaceOrder(sig.TokenID, sig.Side, price, sig.Size)
@@ -957,6 +989,7 @@ func checkOrderBounds(
 	hub *api.Hub,
 	tpThreshold float64,
 	slThreshold float64,
+	scalpThreshold float64,
 ) {
 	openOrders := paperEngine.GetOpenOrders()
 	for _, o := range openOrders {
@@ -977,7 +1010,9 @@ func checkOrderBounds(
 		}
 
 		var reason string
-		if tpThreshold > 0 && orderPnl >= tpThreshold {
+		if scalpThreshold > 0 && orderPnl >= scalpThreshold {
+			reason = "SCALP"
+		} else if tpThreshold > 0 && orderPnl >= tpThreshold {
 			reason = "TP"
 		} else if slThreshold > 0 && -orderPnl >= slThreshold {
 			reason = "SL"
